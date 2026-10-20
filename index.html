@@ -1,0 +1,230 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sagu - 保存投稿検索</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;background:#f3f6fb;color:#18223b;margin:0}
+main{max-width:750px;margin:auto;padding:24px 16px}
+h1{color:#315ed4;margin-bottom:0}
+small{color:#718099}
+.card{background:white;border-radius:16px;padding:20px;margin:14px 0;box-shadow:0 2px 10px #00000009}
+input,textarea,button{font:inherit}
+input[type=text],input[type=url],textarea{width:100%;padding:13px;border:1px solid #d5ddeb;border-radius:9px;margin:8px 0}
+button,.link{background:#e8efff;color:#2751a7;border:0;border-radius:9px;padding:11px 14px;cursor:pointer;display:inline-block;text-decoration:none;font-weight:600}
+button.primary{background:#315ed4;color:white}
+.result{border-bottom:1px solid #e7ecf3;padding:15px 0}
+.result:last-child{border-bottom:0}
+.result h3{margin:5px 0}
+.preview{color:#57647c;white-space:pre-wrap;overflow-wrap:anywhere}
+.row{display:flex;gap:9px;flex-wrap:wrap;margin-top:9px}
+details{margin-top:15px}
+#status{font-size:14px;color:#37549c}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>🔖 Sagu</h1>
+<small>あの保存、どこだっけ？</small>
+</header>
+
+<section class="card">
+<input id="search" type="text" placeholder="沖縄、筋トレ、バッグ..." aria-label="投稿を検索">
+<div id="count">0件の投稿</div>
+<div id="results"></div>
+</section>
+
+<section class="card">
+<h2>過去の保存投稿を取り込む</h2>
+<p>Instagramの saved_posts.json を選んでください。</p>
+<input id="file" type="file" accept=".json,application/json">
+<p id="status"></p>
+</section>
+
+<section class="card">
+<details>
+<summary>＋ 新しい投稿を追加</summary>
+<input id="url" type="url" placeholder="Instagramの投稿URL">
+<input id="title" type="text" placeholder="タイトル">
+<textarea id="memo" placeholder="検索用メモ・タグ"></textarea>
+<button class="primary" id="add">保存する</button>
+</details>
+</section>
+
+<section class="card">
+<button id="backup">データをバックアップ</button>
+<p><small>検索データはこのブラウザ内に保存されます。端末変更やブラウザデータ削除に備えてバックアップしてください。</small></p>
+</section>
+</main>
+
+<script>
+"use strict";
+const KEY="sagu_data_v1";
+let posts=[];
+const $=id=>document.getElementById(id);
+
+function decode(value){
+ if(typeof value!=="string")return "";
+ // Instagramのエクスポートで発生するUTF-8の文字化けを補正
+ try{
+  if(!/[ÃÂâãåæçèéðï]/.test(value))return value;
+  const bytes=Array.from(value,c=>c.charCodeAt(0));
+  if(bytes.some(n=>n>255))return value;
+  const fixed=new TextDecoder("utf-8",{fatal:true})
+    .decode(new Uint8Array(bytes));
+  return fixed;
+ }catch{return value}
+}
+
+function normalizeUrl(value){
+ try{
+  const u=new URL(value);
+  if(!["instagram.com","www.instagram.com"].includes(u.hostname))return "";
+  const match=u.pathname.match(/^\/(p|reel|tv)\/([a-zA-Z0-9_-]+)/);
+  if(!match)return "";
+  return "https://www.instagram.com/"+match[1]+"/"+match[2]+"/";
+ }catch{return ""}
+}
+
+function getCaption(entry){
+ const vals=entry.label_values||[];
+ const found=vals.find(v=>decode(v.label)==="キャプション");
+ return decode(found?.value||"");
+}
+
+function fromInstagram(data){
+ if(!Array.isArray(data))throw Error("Instagramの保存投稿JSON形式ではありません。");
+ const list=[];
+ for(const entry of data){
+  const vals=entry.label_values||[];
+  const link=vals.find(v=>v.label==="URL");
+  const url=normalizeUrl(link?.href||link?.value||"");
+  if(!url)continue;
+  const caption=getCaption(entry);
+  const first=caption.split("\n").map(x=>x.trim()).find(Boolean);
+  list.push({
+   url,
+   title:decode(first||"保存した投稿").slice(0,120),
+   caption,
+   memo:"",
+   date:Number(entry.timestamp||0)
+  });
+ }
+ return list;
+}
+
+function save(){
+ try{
+  localStorage.setItem(KEY,JSON.stringify(posts));
+  return true;
+ }catch{
+  alert("保存容量を超えたか、ブラウザの保存が制限されています。");
+  return false;
+ }
+}
+
+function merge(incoming){
+ const seen=new Set(posts.map(p=>p.url));
+ let added=0;
+ for(const p of incoming){
+  if(!seen.has(p.url)){
+   posts.push(p);seen.add(p.url);added++;
+  }
+ }
+ posts.sort((a,b)=>(b.date||0)-(a.date||0));
+ save();render();
+ return added;
+}
+
+function render(){
+ const q=$("search").value.trim().toLocaleLowerCase();
+ const words=q.split(/\s+/).filter(Boolean);
+ const matched=posts.filter(p=>{
+  const text=[p.title,p.caption,p.memo,p.url].join(" ").toLocaleLowerCase();
+  return words.every(w=>text.includes(w));
+ });
+ $("count").textContent=matched.length+"件表示 / 全"+posts.length+"件";
+ const root=$("results");
+ root.replaceChildren();
+ matched.forEach(p=>{
+  const item=document.createElement("article");
+  item.className="result";
+  const h=document.createElement("h3");
+  h.textContent=p.title;
+  item.append(h);
+
+  const description=document.createElement("p");
+  description.className="preview";
+  description.textContent=(p.caption||p.memo||"説明文なし").slice(0,230);
+  item.append(description);
+
+  const row=document.createElement("div");
+  row.className="row";
+
+  const link=document.createElement("a");
+  link.className="link";
+  link.href=p.url;
+  link.target="_blank";
+  link.rel="noopener noreferrer";
+  link.textContent="Instagramで開く ↗";
+  row.append(link);
+
+  const edit=document.createElement("button");
+  edit.textContent="メモを編集";
+  edit.onclick=()=>{
+   const value=prompt("検索用メモを入力",p.memo||"");
+   if(value===null)return;
+   p.memo=value;save();render();
+  };
+  row.append(edit);
+  item.append(row);
+  root.append(item);
+ });
+}
+
+$("file").addEventListener("change",async e=>{
+ const file=e.target.files?.[0];
+ if(!file)return;
+ try{
+  const data=JSON.parse(await file.text());
+  const imported=fromInstagram(data);
+  const count=merge(imported);
+  $("status").textContent=count+"件を追加しました（解析対象 "+imported.length+"件）。";
+ }catch(err){
+  $("status").textContent="読み込み失敗："+err.message;
+ }
+ e.target.value="";
+});
+
+$("search").addEventListener("input",render);
+
+$("add").addEventListener("click",()=>{
+ const url=normalizeUrl($("url").value.trim());
+ if(!url){alert("Instagramの投稿URLを入力してください。");return}
+ const title=$("title").value.trim()||"保存した投稿";
+ const memo=$("memo").value.trim();
+ const count=merge([{url,title,memo,caption:"",date:Date.now()/1000}]);
+ alert(count?"保存しました":"この投稿は登録済みです");
+ $("url").value="";$("title").value="";$("memo").value="";
+});
+
+$("backup").addEventListener("click",()=>{
+ const blob=new Blob([JSON.stringify(posts,null,2)],{type:"application/json"});
+ const link=document.createElement("a");
+ const objectURL=URL.createObjectURL(blob);
+ link.href=objectURL;link.download="sagu_backup.json";link.click();
+ setTimeout(()=>URL.revokeObjectURL(objectURL),1000);
+});
+
+try{
+ const stored=JSON.parse(localStorage.getItem(KEY)||"[]");
+ posts=Array.isArray(stored)?stored:[];
+}catch{posts=[]}
+render();
+</script>
+</body>
+</html>
